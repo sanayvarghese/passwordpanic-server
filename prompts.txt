@@ -1,0 +1,12 @@
+for the user they can see their time taken at realtime.
+also when all the players are completed the room stops and the timer is stoped and show a popup showing the time taken by them and congragulations you have find the password
+
+
+make the host can also reconnect feature. because when we reload we are creating a new room
+
+
+
+
+
+
+
