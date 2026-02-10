@@ -1,4 +1,5 @@
 import { Server, ServerWebSocket } from "bun";
+import axios from "axios";
 
 interface Player {
   id: string;
@@ -221,18 +222,31 @@ function getRoomStats(roomId: string) {
   };
 }
 
-const port =
-  Number(process.env.PORT) ||
-  Number(process.env.BUN_PORT) ||
-  3001;
+const port = Number(process.env.PORT) || Number(process.env.BUN_PORT) || 3001;
 
 const server = Bun.serve({
   port,
-  fetch(req, server) {
+  async fetch(req, server) {
     const url = new URL(req.url);
 
     if (url.pathname === "/health") {
       return new Response("OK");
+    }
+
+    if (url.pathname === "/wordle") {
+      let date = new Date();
+      let year = date.getFullYear();
+      let month = date.getMonth() + 1;
+      let day = date.getDate();
+
+      let url = `https://www.nytimes.com/svc/wordle/v2/${year}-${("0" + month).slice(-2)}-${("0" + day).slice(-2)}.json`;
+
+      var res = await axios.get(url);
+      return new Response(JSON.stringify(res.data), {
+        headers: {
+          "Content-Type": "application/json",
+        },
+      });
     }
 
     // Upgrade to WebSocket
