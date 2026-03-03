@@ -224,10 +224,22 @@ function getRoomStats(roomId: string) {
 
 const port = Number(process.env.PORT) || Number(process.env.BUN_PORT) || 3001;
 
+const corsHeaders = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+  "Access-Control-Allow-Headers": "Content-Type",
+};
+
 const server = Bun.serve({
   port,
   async fetch(req, server) {
     const url = new URL(req.url);
+
+    if (req.method === "OPTIONS") {
+      return new Response(null, {
+        headers: corsHeaders,
+      });
+    }
 
     if (url.pathname === "/health") {
       return new Response("OK");
@@ -245,6 +257,7 @@ const server = Bun.serve({
       return new Response(JSON.stringify(res.data), {
         headers: {
           "Content-Type": "application/json",
+          ...corsHeaders,
         },
       });
     }
