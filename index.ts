@@ -13,6 +13,7 @@ interface Player {
     allSolved: boolean;
     finishedAt: number;
     timeTaken: number;
+    skipsUsed: number;
   };
   joinedAt: number;
 }
@@ -21,6 +22,7 @@ interface RuleState {
   num: number;
   correct: boolean;
   unlocked: boolean;
+  skipped: boolean;
 }
 
 interface Room {
@@ -34,6 +36,7 @@ interface Room {
   startedAt: number | null;
   timeLimit: number; // in milliseconds
   endReason: string | null; // 'time_up' | 'stopped' | null
+  maxSkips: number; // max skips per player, default 2
 }
 
 const rooms = new Map<string, Room>();
@@ -55,6 +58,7 @@ function getOrCreateRoom(
   hostId: string,
   playerName: string,
   timeLimit: number = 60 * 60 * 1000,
+  maxSkips: number = 2,
 ): Room {
   // Check if player already has a room
   const existingPlayer = players.get(hostId);
@@ -79,6 +83,7 @@ function getOrCreateRoom(
     startedAt: null,
     timeLimit: timeLimit,
     endReason: null,
+    maxSkips: maxSkips,
   };
 
   rooms.set(room.id, room);
@@ -125,6 +130,7 @@ function endGame(room: Room, reason: "time_up" | "stopped" | "all_completed") {
         timeTaken: timeTaken,
         finishedAt: player.progress.finishedAt,
         ruleStates: player.progress.ruleStates || [], // Include rule states for display
+        skipsUsed: player.progress.skipsUsed || 0,
       };
     })
     .sort((a, b) => {
@@ -207,6 +213,7 @@ function getRoomStats(roomId: string) {
       finishedAt: player.progress.finishedAt,
       timeTaken: player.progress.timeTaken,
       ruleStates: [...ruleStates], // Create a copy to ensure it's included
+      skipsUsed: player.progress.skipsUsed || 0,
     };
   });
 
@@ -219,6 +226,7 @@ function getRoomStats(roomId: string) {
     timeLimit: room.timeLimit,
     startedAt: room.startedAt,
     endReason: room.endReason,
+    maxSkips: room.maxSkips,
   };
 }
 
@@ -280,7 +288,7 @@ const server = Bun.serve({
 
         switch (data.type) {
           case "create_room": {
-            const { playerName, timeLimit } = data;
+            const { playerName, timeLimit, maxSkips } = data;
             const newPlayerId = crypto.randomUUID();
             wsToPlayerId.set(ws, newPlayerId);
 
@@ -288,7 +296,13 @@ const server = Bun.serve({
             const timeLimitMs = timeLimit
               ? timeLimit * 60 * 1000
               : 60 * 60 * 1000;
-            const room = getOrCreateRoom(newPlayerId, playerName, timeLimitMs);
+            const skipCount = typeof maxSkips === "number" ? maxSkips : 2;
+            const room = getOrCreateRoom(
+              newPlayerId,
+              playerName,
+              timeLimitMs,
+              skipCount,
+            );
             const player: Player = {
               id: newPlayerId,
               name: playerName,
@@ -301,6 +315,7 @@ const server = Bun.serve({
                 allSolved: false,
                 finishedAt: null,
                 timeTaken: 0,
+                skipsUsed: 0,
               },
               joinedAt: Date.now(),
             };
@@ -314,6 +329,7 @@ const server = Bun.serve({
                 roomCode: room.code,
                 playerId: newPlayerId,
                 isHost: true,
+                maxSkips: room.maxSkips,
               }),
             );
 
@@ -353,6 +369,7 @@ const server = Bun.serve({
                 allSolved: false,
                 finishedAt: null,
                 timeTaken: 0,
+                skipsUsed: 0,
               },
               joinedAt: Date.now(),
             };
@@ -410,6 +427,7 @@ const server = Bun.serve({
               type: "game_started",
               timeLimit: room.timeLimit,
               startedAt: room.startedAt,
+              maxSkips: room.maxSkips,
             });
 
             // Start timer to check for time limit
@@ -479,6 +497,11 @@ const server = Bun.serve({
                       gameEnded: room.gameEnded,
                       startedAt: room.startedAt,
                       timeLimit: room.timeLimit,
+                      maxSkips: room.maxSkips,
+                      skipsUsed: player.progress.skipsUsed || 0,
+                      skippedRules: (player.progress.ruleStates || [])
+                        .filter((r: RuleState) => r.skipped)
+                        .map((r: RuleState) => r.num),
                     }),
                   );
                   // If host reconnected, send current stats
@@ -510,17 +533,31 @@ const server = Bun.serve({
               allSolved,
             } = data;
 
+            // Preserve skipped flags from existing rule states
+            const existingSkipped = new Map(
+              (player.progress.ruleStates || [])
+                .filter((r: RuleState) => r.skipped)
+                .map((r: RuleState) => [r.num, true]),
+            );
+            const mergedRuleStates = ruleStates
+              ? ruleStates.map((r: any) => ({
+                  ...r,
+                  skipped: existingSkipped.get(r.num) || r.skipped || false,
+                }))
+              : [];
+
             player.progress = {
               rulesCompleted,
               totalRules,
               password: password || "",
-              ruleStates: ruleStates ? [...ruleStates] : [], // Create a copy to ensure it's stored
+              ruleStates: mergedRuleStates,
               allSolved: allSolved || false,
               finishedAt: allSolved ? Date.now() : null,
               timeTaken:
                 allSolved && room && room.startedAt
                   ? Date.now() - room.startedAt
                   : 0,
+              skipsUsed: player.progress.skipsUsed || 0,
             };
 
             // Update room's player data
@@ -558,6 +595,124 @@ const server = Bun.serve({
             const room = rooms.get(player.roomId);
             if (room && room.hostId === playerId) {
               sendToPlayer(playerId, {
+                type: "room_stats",
+                stats: getRoomStats(room.id),
+              });
+            }
+            break;
+          }
+
+          case "skip_rule": {
+            if (!playerId) break;
+            const player = players.get(playerId);
+            if (!player) break;
+
+            const room = rooms.get(player.roomId);
+            if (!room || !room.gameStarted || room.gameEnded) {
+              ws.send(
+                JSON.stringify({
+                  type: "error",
+                  message: "Game is not running",
+                }),
+              );
+              break;
+            }
+
+            const { ruleNum } = data;
+            if (typeof ruleNum !== "number") break;
+
+            // Check if player has skips remaining
+            if ((player.progress.skipsUsed || 0) >= room.maxSkips) {
+              ws.send(
+                JSON.stringify({
+                  type: "error",
+                  message: "No skips remaining",
+                }),
+              );
+              break;
+            }
+
+            // Check if rule is already skipped
+            const existingRule = (player.progress.ruleStates || []).find(
+              (r: RuleState) => r.num === ruleNum,
+            );
+            if (existingRule && existingRule.skipped) {
+              ws.send(
+                JSON.stringify({
+                  type: "error",
+                  message: "Rule already skipped",
+                }),
+              );
+              break;
+            }
+
+            // Mark rule as skipped
+            player.progress.skipsUsed = (player.progress.skipsUsed || 0) + 1;
+            player.progress.ruleStates = (player.progress.ruleStates || []).map(
+              (r: RuleState) =>
+                r.num === ruleNum ? { ...r, skipped: true, correct: true } : r,
+            );
+
+            // If rule wasn't in ruleStates yet, add it
+            if (
+              !player.progress.ruleStates.find(
+                (r: RuleState) => r.num === ruleNum,
+              )
+            ) {
+              player.progress.ruleStates.push({
+                num: ruleNum,
+                correct: true,
+                unlocked: true,
+                skipped: true,
+              });
+            }
+
+            // Update completed count
+            const completedCount = player.progress.ruleStates.filter(
+              (r: RuleState) => r.correct,
+            ).length;
+            player.progress.rulesCompleted = completedCount;
+
+            // Check if all solved now
+            if (
+              player.progress.totalRules > 0 &&
+              completedCount >= player.progress.totalRules
+            ) {
+              player.progress.allSolved = true;
+              player.progress.finishedAt = Date.now();
+              player.progress.timeTaken = room.startedAt
+                ? Date.now() - room.startedAt
+                : 0;
+            }
+
+            room.players.set(playerId, player);
+
+            // Send confirmation back to player
+            ws.send(
+              JSON.stringify({
+                type: "rule_skipped",
+                ruleNum: ruleNum,
+                skipsUsed: player.progress.skipsUsed,
+                maxSkips: room.maxSkips,
+              }),
+            );
+
+            // Check if all players completed
+            const nonHostPlayers = Array.from(room.players.values()).filter(
+              (p) => p.id !== room.hostId,
+            );
+            const allPlayersCompleted =
+              nonHostPlayers.length > 0 &&
+              nonHostPlayers.every((p) => p.progress.allSolved);
+
+            if (allPlayersCompleted) {
+              endGame(room, "all_completed");
+              break;
+            }
+
+            // Send updated stats to host
+            if (room.hostId && room.hostId !== playerId) {
+              sendToPlayer(room.hostId, {
                 type: "room_stats",
                 stats: getRoomStats(room.id),
               });
