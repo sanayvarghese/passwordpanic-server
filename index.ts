@@ -785,3 +785,35 @@ const server = Bun.serve({
 });
 
 console.log(`Server running on http://localhost:${server.port}`);
+
+// --- Keep-alive mechanisms to prevent Render free-tier spin-down ---
+
+// 1. WebSocket ping: Send a ping to every connected client every 30 seconds.
+//    This keeps the WS connection alive and prevents proxy/load-balancer timeouts.
+setInterval(() => {
+  wsToPlayerId.forEach((_playerId, ws) => {
+    try {
+      ws.send(JSON.stringify({ type: "ping" }));
+    } catch (e) {
+      // Connection already dead, ignore
+    }
+  });
+}, 30_000);
+
+// 2. Self-ping: Hit our own /health endpoint every 10 minutes to prevent
+//    Render's free tier from spinning down the service due to HTTP inactivity.
+const RENDER_EXTERNAL_URL = process.env.RENDER_EXTERNAL_URL;
+if (RENDER_EXTERNAL_URL) {
+  setInterval(
+    async () => {
+      try {
+        await fetch(`${RENDER_EXTERNAL_URL}/health`);
+        console.log("[keep-alive] Self-ping successful");
+      } catch (e) {
+        console.error("[keep-alive] Self-ping failed:", e);
+      }
+    },
+    10 * 60 * 1000,
+  ); // every 10 minutes
+  console.log("[keep-alive] Self-ping enabled for Render");
+}
