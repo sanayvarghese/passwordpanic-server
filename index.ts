@@ -97,7 +97,7 @@ function joinRoomByCode(
   playerName: string,
 ): Room | null {
   const room = Array.from(rooms.values()).find((r) => r.code === code);
-  if (!room || room.gameStarted || room.gameEnded) {
+  if (!room || room.gameEnded) {
     return null;
   }
 
@@ -351,7 +351,7 @@ const server = Bun.serve({
               ws.send(
                 JSON.stringify({
                   type: "join_failed",
-                  message: "Room not found or game already started",
+                  message: "Room not found or game already ended",
                 }),
               );
               break;
@@ -383,6 +383,7 @@ const server = Bun.serve({
                 roomCode: room.code,
                 playerId: newPlayerId,
                 isHost: room.hostId === newPlayerId,
+                gameStarted: room.gameStarted,
               }),
             );
 
@@ -401,6 +402,17 @@ const server = Bun.serve({
                 type: "room_stats",
                 stats: getRoomStats(room.id),
               });
+            }
+
+            if (room.gameStarted && !room.gameEnded) {
+              ws.send(
+                JSON.stringify({
+                  type: "game_started",
+                  timeLimit: room.timeLimit,
+                  startedAt: room.startedAt,
+                  maxSkips: room.maxSkips,
+                }),
+              );
             }
             break;
           }
